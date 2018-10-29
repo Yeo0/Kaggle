@@ -31,14 +31,14 @@ features = []
 # 범주형 변수를 .factorize() 함수를 통해 label encoding한다.
 categorical_cols = ['ind_empleado', 'pais_residencia', 'sexo', 'tiprel_1mes', 'indresi', 'indext', 'conyuemp', 'canal_entrada', 'indfall', 'tipodom', 'nomprov', 'segmento']
 for col in categorical_cols:
-    df[col], _ = df[col].factorize(na_sentinel=-99)
+    df[col], _ = df[col].factorize(na_sentinel=-99) #
 features += categorical_cols
 
 # 수치형 변수의 특이값과 결측값을 -99로 대체하고, 정수형으로 변환한다.
 df['age'].replace(' NA', -99, inplace=True)
 df['age'] = df['age'].astype(np.int8)
 
-df['antiguedad'].replace('     NA', -99, inplace=True)
+df['antiguedad'].replace('     NA', -99, inplace=True) #inplace=True:dataframe내에서 정렬된 상태로 다시 저장하기
 df['antiguedad'] = df['antiguedad'].astype(np.int8)
 
 df['renta'].replace('         NA', -99, inplace=True)
