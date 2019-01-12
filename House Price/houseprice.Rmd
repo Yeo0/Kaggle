@@ -1,0 +1,1223 @@
+---
+title: "House prices - EDA and Modeling"
+author: "stat17_hb"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=T)
+```
+
+# Load libraries and data
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(plyr)
+library(psych)
+library(caret)
+library(randomForest)
+library(e1071)
+library(xgboost)
+library(neuralnet)
+```
+
+
+```{r, eval=FALSE}
+# for kaggle kernel
+list.files()
+train <- read_csv("../input/train.csv")
+test <- read_csv("../input/test.csv")
+```
+
+```{r, message=FALSE, warning=FALSE}
+# for local env
+list.files()
+train <- read_csv("all/train.csv")
+test <- read_csv("all/test.csv")
+```
+
+
+# Simple EDA before missing value imputation
+
+## Glimpse data
+
+```{r}
+glimpse(train)
+```
+
+```{r}
+glimpse(test)
+```
+
++ Saleprice is target variable. It is only in the train data.
+
+
+```{r}
+# Combine train and test data for EDA
+all <- dplyr::bind_rows(train, test)
+```
+
+
+## Classify categrical variables and continuous variables
+
+```{r}
+cat_var <- names(all)[which(sapply(all, is.character))]
+numeric_var <- names(all)[which(sapply(all, is.numeric))]
+numeric_var
+```
+
+
+```{r}
+table(all$MSSubClass)
+```
+
+MSSubClass: Identifies the type of dwelling involved in the sale.
+
+        20	1-STORY 1946 & NEWER ALL STYLES
+        30	1-STORY 1945 & OLDER
+        40	1-STORY W/FINISHED ATTIC ALL AGES
+        45	1-1/2 STORY - UNFINISHED ALL AGES
+        50	1-1/2 STORY FINISHED ALL AGES
+        60	2-STORY 1946 & NEWER
+        70	2-STORY 1945 & OLDER
+        75	2-1/2 STORY ALL AGES
+        80	SPLIT OR MULTI-LEVEL
+        85	SPLIT FOYER
+        90	DUPLEX - ALL STYLES AND AGES
+       120	1-STORY PUD (Planned Unit Development) - 1946 & NEWER
+       150	1-1/2 STORY PUD - ALL AGES
+       160	2-STORY PUD - 1946 & NEWER
+       180	PUD - MULTILEVEL - INCL SPLIT LEV/FOYER
+       190	2 FAMILY CONVERSION - ALL STYLES AND AGES
+
++ 'MSSubClass' seems to be changed into categorical variable 
+
+
+```{r}
+cat_var <- c(cat_var, "MSSubClass")
+numeric_var <- setdiff(numeric_var, intersect(cat_var, numeric_var))
+cat_var
+numeric_var
+```
+
+## EDA for continuous variables
+
+### SalePrice(Target variable)
+
+```{r, fig.width=8, fig.height=4}
+par(mfrow=c(1,2))
+hist(all$SalePrice, xlab="SalePrice", main="SalePrice")
+hist(log(all$SalePrice), xlab="SalePrice", main="SalePrice")
+```
+
++ SalePrice has skewed distribution.
+
++ Log transformation can change the right skewed distribution symmetrically.
+
+
+
+
+### Histograms for continuous variables
+
+```{r, fig.width=7, fig.height=7}
+par(mfrow=c(3,3))
+for (var in numeric_var[-c(1, 37)]){ # drop Id, SalePrice
+  hist(unlist(all[,var]), main=var, xlab=var)
+}
+```
+
+
+### Correlations with SalePrice
+
+```{r, fig.width=10, fig.height=10}
+cor.plot(all[numeric_var[-1]], xlas=2, diag=F, upper=F, cex=0.5)
+```
+
++ OverallQual is highly correlated with SalePrice
+
+```{r}
+boxplot(all$SalePrice ~ all$OverallQual)
+```
+
+
+
+
+## EDA for categorical variables
+
+### Barplots for categorical variables
+
+```{r, fig.width=6, fig.height=6}
+par(mfrow=c(3,3))
+for (var in cat_var){
+  barplot(table(all[, var]), main=var, las=2, cex.names=1)
+}
+```
+
+
+# Missing value imputation
+
+```{r}
+colSums(is.na(all))
+# colSums(sapply(all, is.na)) # same result
+```
+
+
+## Categorical varibles with missing values
+
+```{r}
+missing.cat_var <- cat_var[which(colSums(is.na(all[, cat_var])) != 0)]
+```
+
+
+```{r}
+missing.cat.desc <- order(colSums(is.na(all[, cat_var]))[colSums(is.na(all[, cat_var]))!=0], 
+                           decreasing = T)
+colSums(is.na(all[, cat_var]))[colSums(is.na(all[, cat_var]))!=0][missing.cat.desc]
+```
+
+```{r}
+## PoolQC
+table(all$PoolQC)
+```
+
+PoolQC: Pool quality
+
+       Ex	Excellent
+       Gd	Good
+       TA	Average/Typical
+       Fa	Fair
+       NA	No Pool
+
+```{r}
+all[is.na(all$PoolQC)==1 & all$PoolArea > 0, c("PoolQC", "PoolArea", "OverallQual")]
+```
+
+```{r}
+all[all$PoolArea > 0, c("PoolQC", "PoolArea", "OverallQual")]
+```
+
+```{r}
+all$PoolQC[is.na(all$PoolQC)==1 & all$PoolArea > 0] <- c("TA", "Gd", "TA")
+```
+
+
+```{r}
+all[is.na(all$PoolQC), "PoolQC"] <- "No_Pool"
+table(all$PoolQC)
+```
+
+
+```{r}
+Qualities <- c('No_Pool' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$PoolQC <- as.integer(revalue(all$PoolQC, Qualities))
+table(all$PoolQC)
+```
+
+
+```{r}
+## MiscFeature
+table(all$MiscFeature)
+```
+
+MiscFeature: Miscellaneous feature not covered in other categories
+
+       Elev	Elevator
+       Gar2	2nd Garage (if not described in garage section)
+       Othr	Other
+       Shed	Shed (over 100 SF)
+       TenC	Tennis Court
+       NA	None
+       
+```{r}
+all[is.na(all$MiscFeature), "MiscFeature"] <- "None"
+table(all$MiscFeature)
+```
+
+```{r}
+## Alley
+table(all$Alley)
+```
+
+Alley: Type of alley access to property
+
+       Grvl	Gravel
+       Pave	Paved
+       NA 	No alley access
+       
+       
+```{r}
+all[is.na(all$Alley), "Alley"] <- "No_alley"
+table(all$Alley)
+```
+
+```{r}
+## Fence
+table(all$Fence)
+```
+
+Fence: Fence quality
+
+       GdPrv	Good Privacy
+       MnPrv	Minimum Privacy
+       GdWo	Good Wood
+       MnWw	Minimum Wood/Wire
+       NA	No Fence
+       
+```{r}
+all[is.na(all$Fence), "Fence"] <- "No_Fence"
+table(all$Fence)
+```
+
+```{r}
+## FireplaceQu
+table(all$FireplaceQu)
+```
+
+FireplaceQu: Fireplace quality
+
+       Ex	Excellent - Exceptional Masonry Fireplace
+       Gd	Good - Masonry Fireplace in main level
+       TA	Average - Prefabricated Fireplace in main living area or Masonry Fireplace in basement
+       Fa	Fair - Prefabricated Fireplace in basement
+       Po	Poor - Ben Franklin Stove
+       NA	No Fireplace
+       
+       
+```{r}
+all[is.na(all$FireplaceQu), "FireplaceQu"] <- "No_Fireplace"
+table(all$FireplaceQu)
+```
+
+```{r}
+Qualities <- c('No_Fireplace' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$FireplaceQu <- as.integer(revalue(all$FireplaceQu, Qualities))
+table(all$FireplaceQu)
+```
+
+```{r}
+## GarageFinish
+table(all$GarageFinish)
+```
+
+GarageFinish: Interior finish of the garage
+
+       Fin	Finished
+       RFn	Rough Finished
+       Unf	Unfinished
+       NA	No Garage
+       
+```{r}
+all[is.na(all$GarageFinish), "GarageFinish"] <- "No_Garage"
+table(all$GarageFinish)
+```
+
+```{r}
+## GarageQual
+table(all$GarageQual)
+```
+
+GarageQual: Garage quality
+
+       Ex	Excellent
+       Gd	Good
+       TA	Typical/Average
+       Fa	Fair
+       Po	Poor
+       NA	No Garage
+       
+```{r}
+all[is.na(all$GarageQual), "GarageQual"] <- "No_Garage"
+table(all$GarageQual)
+```
+
+
+```{r}
+Qualities <- c('No_Garage' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$GarageQual <- as.integer(revalue(all$GarageQual, Qualities))
+table(all$GarageQual)
+```
+
+
+```{r}
+## GarageCond
+table(all$GarageCond)
+```
+
+GarageCond: Garage condition
+
+       Ex	Excellent
+       Gd	Good
+       TA	Typical/Average
+       Fa	Fair
+       Po	Poor
+       NA	No Garage
+       
+       
+```{r}
+all[is.na(all$GarageCond), "GarageCond"] <- "No_Garage"
+table(all$GarageCond)
+```
+
+```{r}
+Qualities <- c('No_Garage' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$GarageCond <- as.integer(revalue(all$GarageCond, Qualities))
+table(all$GarageCond)
+```
+
+
+
+```{r}
+## GarageType
+table(all$GarageType)
+```
+
+GarageType: Garage location
+
+       2Types	More than one type of garage
+       Attchd	Attached to home
+       Basment	Basement Garage
+       BuiltIn	Built-In (Garage part of house - typically has room above garage)
+       CarPort	Car Port
+       Detchd	Detached from home
+       NA	No Garage
+       
+```{r}
+all[is.na(all$GarageType), "GarageType"] <- "No_Garage"
+table(all$GarageType)
+```
+
+```{r}
+## BsmtCond
+table(all$BsmtCond)
+```
+
+BsmtCond: Evaluates the general condition of the basement
+
+       Ex	Excellent
+       Gd	Good
+       TA	Typical - slight dampness allowed
+       Fa	Fair - dampness or some cracking or settling
+       Po	Poor - Severe cracking, settling, or wetness
+       NA	No Basement
+       
+```{r}
+all[is.na(all$BsmtCond), "BsmtCond"] <- "No_Basement"
+table(all$BsmtCond)
+```
+
+
+```{r}
+Qualities <- c('No_Basement' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$BsmtCond <- as.integer(revalue(all$BsmtCond, Qualities))
+table(all$BsmtCond)
+```
+
+
+```{r}
+table(all$BsmtQual)
+```
+
+BsmtQual: Evaluates the height of the basement
+
+       10 Ex	Excellent (100+ inches)
+       7 Gd	Good (90-99 inches)
+       5 TA	Typical (80-89 inches)
+       3 Fa	Fair (70-79 inches)
+       1 Po	Poor (<70 inches
+       0 NA	No Basement
+
+```{r}
+all[is.na(all$BsmtQual), "BsmtQual"] <- "No_Basement"
+table(all$BsmtQual) 
+```
+
+
+```{r}
+Qualities <- c('No_Basement' = 0, 'Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$BsmtQual <- as.integer(revalue(all$BsmtQual, Qualities))
+table(all$BsmtQual)
+```
+
+
+Bsmt- variables below here have the same NA type with BsmtCond
+
+```{r}
+## BsmtExposure
+all[is.na(all$BsmtExposure), "BsmtExposure"] <- "No_Basement"
+table(all$BsmtExposure)
+
+## BsmtFinType2
+all[is.na(all$BsmtFinType2), "BsmtFinType2"] <- "No_Basement"
+table(all$BsmtFinType2) # NA : No Basement
+
+## BsmtFinType1
+all[is.na(all$BsmtFinType1), "BsmtFinType1"] <- "No_Basement"
+table(all$BsmtFinType1) # NA : No Basement
+```
+
+
+
+```{r}
+## MasVnrType
+table(all$MasVnrType)
+```
+
+MasVnrType: Masonry veneer type
+
+       BrkCmn	Brick Common
+       BrkFace	Brick Face
+       CBlock	Cinder Block
+       None	None
+       Stone	Stone
+       
+```{r}
+all[is.na(all$MasVnrType), "MasVnrType"] <- "None" # There are NAs that are not assigned to "None"
+table(all$MasVnrType)
+```
+
+```{r}
+table(all$MSZoning)
+```
+
+MSZoning: Identifies the general zoning classification of the sale.
+
+       A	Agriculture
+       C	Commercial
+       FV	Floating Village Residential
+       I	Industrial
+       RH	Residential High Density
+       RL	Residential Low Density
+       RP	Residential Low Density Park
+       RM	Residential Medium Density
+       
+```{r}
+all[is.na(all$MSZoning), "MSZoning"] <- names(sort(table(all$MSZoning), decreasing = T))[1] # imputing mode
+```
+
+```{r}
+table(all$Utilities)
+```
+
+Utilities: Type of utilities available
+
+       AllPub	All public Utilities (E,G,W,& S)
+       NoSewr	Electricity, Gas, and Water (Septic Tank)
+       NoSeWa	Electricity and Gas Only
+       ELO	Electricity only
+
++ almost all observations are in the "AllPub" category. So, I think it is not useful to predict house price. I dropped it.
+       
+```{r}
+cat_var <- cat_var[cat_var != "Utilities"]
+all <- all[,-which(names(all)=="Utilities")]
+```
+
+```{r}
+table(all$Functional)
+```
+
+Functional: Home functionality (Assume typical unless deductions are warranted)
+
+       Typ	Typical Functionality
+       Min1	Minor Deductions 1
+       Min2	Minor Deductions 2
+       Mod	Moderate Deductions
+       Maj1	Major Deductions 1
+       Maj2	Major Deductions 2
+       Sev	Severely Damaged
+       Sal	Salvage only
+       
+```{r}
+all[is.na(all$Functional), "Functional"] <- names(sort(table(all$Functional), decreasing = T))[1] # imputing mode
+table(all$Functional)
+```
+
+```{r}
+table(all$Exterior1st)
+```
+
+Exterior1st: Exterior covering on house
+
+       AsbShng	Asbestos Shingles
+       AsphShn	Asphalt Shingles
+       BrkComm	Brick Common
+       BrkFace	Brick Face
+       CBlock	Cinder Block
+       CemntBd	Cement Board
+       HdBoard	Hard Board
+       ImStucc	Imitation Stucco
+       MetalSd	Metal Siding
+       Other	Other
+       Plywood	Plywood
+       PreCast	PreCast
+       Stone	Stone
+       Stucco	Stucco
+       VinylSd	Vinyl Siding
+       Wd Sdng	Wood Siding
+       WdShing	Wood Shingles
+
+```{r}
+all[is.na(all$Exterior1st), "Exterior1st"] <- names(sort(table(all$Exterior1st), decreasing = T))[1] # imputing mode
+table(all$Exterior1st)
+```
+
+```{r}
+table(all$Exterior2nd)
+```
+
+Exterior2nd: Exterior covering on house (if more than one material)
+
+       AsbShng	Asbestos Shingles
+       AsphShn	Asphalt Shingles
+       BrkComm	Brick Common
+       BrkFace	Brick Face
+       CBlock	Cinder Block
+       CemntBd	Cement Board
+       HdBoard	Hard Board
+       ImStucc	Imitation Stucco
+       MetalSd	Metal Siding
+       Other	Other
+       Plywood	Plywood
+       PreCast	PreCast
+       Stone	Stone
+       Stucco	Stucco
+       VinylSd	Vinyl Siding
+       Wd Sdng	Wood Siding
+       WdShing	Wood Shingles
+
+```{r}
+all[is.na(all$Exterior2nd), "Exterior2nd"] <- names(sort(table(all$Exterior2nd), decreasing = T))[1] # imputing mode
+table(all$Exterior2nd)
+```
+
+```{r}
+table(all$Electrical)
+```
+
+Electrical: Electrical system
+
+       SBrkr	Standard Circuit Breakers & Romex
+       FuseA	Fuse Box over 60 AMP and all Romex wiring (Average)
+       FuseF	60 AMP Fuse Box and mostly Romex wiring (Fair)
+       FuseP	60 AMP Fuse Box and mostly knob & tube wiring (poor)
+       Mix	Mixed
+
+```{r}
+all[is.na(all$Electrical), "Electrical"] <- names(sort(table(all$Electrical), decreasing = T))[1] # imputing mode
+table(all$Electrical)
+```
+
+```{r}
+table(all$KitchenQual)
+```
+
+KitchenQual: Kitchen quality
+
+       Ex	Excellent
+       Gd	Good
+       TA	Typical/Average
+       Fa	Fair
+       Po	Poor
+
+```{r}
+all[is.na(all$KitchenQual), "KitchenQual"] <- names(sort(table(all$KitchenQual), decreasing = T))[1] # imputing mode
+table(all$KitchenQual)
+```
+
+```{r}
+Qualities <- c('Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+all$KitchenQual <- as.integer(revalue(all$KitchenQual, Qualities))
+table(all$KitchenQual)
+```
+
+
+```{r}
+table(all$SaleType)
+```
+
+SaleType: Type of sale
+
+       WD 	Warranty Deed - Conventional
+       CWD	Warranty Deed - Cash
+       VWD	Warranty Deed - VA Loan
+       New	Home just constructed and sold
+       COD	Court Officer Deed/Estate
+       Con	Contract 15% Down payment regular terms
+       ConLw	Contract Low Down payment and low interest
+       ConLI	Contract Low Interest
+       ConLD	Contract Low Down
+       Oth	Other
+
+```{r}
+all[is.na(all$SaleType), "SaleType"] <- names(sort(table(all$SaleType), decreasing = T))[1] # imputing mode
+table(all$SaleType)
+```
+
+
+```{r}
+# missing values check tool
+missing.cat.desc <- order(colSums(is.na(all[, cat_var]))[colSums(is.na(all[, cat_var]))!=0], 
+                           decreasing = T)
+colSums(is.na(all[, cat_var]))[colSums(is.na(all[, cat_var]))!=0][missing.cat.desc]
+```
+
+
+## Continuous varibles with missing values
+
+```{r}
+missing.numeric_var <- colSums(is.na(all[, numeric_var]))[colSums(is.na(all[, numeric_var]))!=0]
+missing.numeric_var[order(missing.numeric_var, decreasing=T)]
+```
+
+```{r, fig.width=10, fig.height=5}
+## LotFrontage: Linear feet of street connected to property
+boxplot(all$LotFrontage~factor(all$Neighborhood), las=2, cex.axis=0.8)
+```
+
+```{r}
+# impute with median by Neighborhood
+LF_by_Nb <- aggregate(all$LotFrontage, by=list(factor(all$Neighborhood)), FUN=median, na.rm=T)
+
+for (i in 1:nrow(LF_by_Nb)){
+  all[is.na(all$LotFrontage) & all$Neighborhood == LF_by_Nb$Group.1[i], "LotFrontage"] <- LF_by_Nb$x[i]
+}
+```
+
+
+```{r}
+## MasVnrArea: Masonry veneer area in square feet
+# need to check whether Masonry veneer exists
+all$MasVnrType[is.na(all$MasVnrArea)] # None
+all[is.na(all$MasVnrArea), "MasVnrArea"] <- 0 # impute with 0
+```
+
+```{r}
+## BsmtFinSF1 : Type 1 finished square feet
+# need to check whether Basement exists
+all$BsmtFinType1[is.na(all$BsmtFinSF1)] # no basement
+all$BsmtFinSF1[is.na(all$BsmtFinSF1)] <- 0
+
+## BsmtFinSF2
+all$BsmtFinType2[is.na(all$BsmtFinSF2)] # no basement
+all$BsmtFinSF2[is.na(all$BsmtFinSF2)] <- 0
+
+## BsmtUnfSF : Unfinished square feet of basement area
+all$BsmtQual[is.na(all$BsmtUnfSF)] # no basement
+all$BsmtUnfSF[is.na(all$BsmtUnfSF)] <- 0
+
+## TotalBsmtSF : Total square feet of basement area
+all$BsmtQual[is.na(all$TotalBsmtSF)] # no basement
+all$TotalBsmtSF[is.na(all$TotalBsmtSF)] <- 0
+```
+
+```{r}
+## GarageArea
+all$GarageType[is.na(all$GarageArea)]
+# imputing with median by GarageType
+all$GarageArea[is.na(all$GarageArea)] <- median(all$GarageArea[all$GarageType=="Detchd"], na.rm=T)
+```
+
+```{r}
+all$GarageType[is.na(all$GarageCars)]
+# imputing with median by GarageType
+all$GarageCars[is.na(all$GarageCars)] <- median(all$GarageCars[all$GarageType=="Detchd"], na.rm=T)
+```
+
+```{r}
+table(all$GarageYrBlt)
+```
+
++ 2207 seems to be typo.
+
+```{r}
+all$YearBuilt[which(all$GarageYrBlt==2207)]
+all$YearRemodAdd[which(all$GarageYrBlt==2207)]
+```
+
++ 2207 -> 2007
+
+```{r}
+all$GarageYrBlt[which(all$GarageYrBlt==2207)] <- 2007
+```
+
+```{r}
+# need to check whether garage exists
+all$GarageType[is.na(all$GarageYrBlt)]  # 2 Detchd, 157 NA(no garage)
+```
+
++ I thought "GarageYrBlt" is not important variable to predict SalePrice. Because there are other variables containing year information. Also, it is hard to be used due to "No_Garage" elements. So, I dropped "GarageYrBlt". 
+
+```{r}
+all <- all[ ,-which(names(all) == "GarageYrBlt")]
+numeric_var <- numeric_var[numeric_var!="GarageYrBlt"]
+```
+
+
+```{r}
+all$BsmtCond[is.na(all$BsmtFullBath)]
+```
+
+BsmtFullBath: Basement full bathrooms
+
+      0
+      1
+      2
+      3
+
+```{r}
+all$BsmtFullBath[is.na(all$BsmtFullBath)] <- 0
+```
+
+
+```{r}
+all$BsmtCond[is.na(all$BsmtHalfBath)]
+```
+
+BsmtHalfBath: Basement half bathrooms
+
+      0
+      1
+      2
+
+```{r}
+all$BsmtHalfBath[is.na(all$BsmtHalfBath)] <- 0
+```
+
+
+```{r}
+# missing values check tool
+missing.numeric_var <- colSums(is.na(all[, numeric_var]))[colSums(is.na(all[, numeric_var]))!=0]
+missing.numeric_var[order(missing.numeric_var, decreasing=T)]
+```
+
+
+```{r}
+colSums(is.na(all))
+```
+
++ Imputation is done.
+
+
+# More EDA and Feature engineering
+
+```{r}
+time_var <- c("YearBuilt", "YearRemodAdd", "MoSold", "YrSold")
+bstm_var <- c("BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF")
+bath_var <- c("BsmtFullBath", "BsmtHalfBath", "FullBath", "HalfBath")
+garage_var <- c("GarageYrBlt", "GarageCars", "GarageArea")
+porch_var <- c("OpenPorchSF", "EnclosedPorch", "3SsnPorch", "ScreenPorch")
+etc <- c("KitchenAbvGr", "TotRmsAbvGrd", "Fireplaces", "MiscVal","WoodDeckSF")
+numeric_var <- numeric_var[-1] # remove Id variable
+```
+
+```{r}
+qualcond_var <- c("OverallQual", "OverallCond", "ExterQual","ExterCond",
+                  "BsmtQual","BsmtCond","HeatingQC","KitchenQual",
+                  "FireplaceQu","GarageQual","GarageCond","PoolQC", 
+                  "BedroomAbvGr", "KitchenAbvGr", "TotRmsAbvGrd")
+numeric_var <- numeric_var[-which(numeric_var %in% qualcond_var)]
+cat_var <- cat_var[-which(cat_var %in% qualcond_var)]
+```
+
+
+## Transform character variables to factors
+
+```{r}
+all[cat_var] <- lapply(all[cat_var], factor)
+sapply(all[, cat_var], class)
+```
+
+## Time variables : "HouseAge", "NewHouse"
+
+    YearBuilt: Original construction date
+
+    YearRemodAdd: Remodel date (same as construction date if no remodeling or additions)
+    
+    MoSold: Month Sold (MM)
+
+    YrSold: Year Sold (YYYY)
+
++ HouseAge = YrSold - YearRemodAdd
+
+```{r}
+all$HouseAge <- all$YrSold - all$YearRemodAdd
+
+unique(all$HouseAge)
+all[all$HouseAge < 0, c("HouseAge", "YrSold", "YearRemodAdd", "YearBuilt")]
+```
+
+```{r}
+all$HouseAge <- ifelse(all$YrSold - all$YearRemodAdd > 0, all$YrSold - all$YearRemodAdd, 0)
+```
+
+
+```{r}
+fit.lm <- lm((all$SalePrice[which(!is.na(all$SalePrice))])~all$HouseAge[which(!is.na(all$SalePrice))])
+summary(fit.lm)
+
+fit.lm <- lm(log(all$SalePrice[which(!is.na(all$SalePrice))])~all$HouseAge[which(!is.na(all$SalePrice))])
+summary(fit.lm)
+```
+
+```{r}
+plot(all$HouseAge[which(!is.na(all$SalePrice))], log(all$SalePrice[which(!is.na(all$SalePrice))]),
+     xlab="HouseAge", ylab="log(SalePrice)")
+abline(fit.lm, col="red", lwd=2)
+```
+
+```{r}
+numeric_var <- c(numeric_var, "HouseAge")
+```
+
+
+```{r}
+all$IsRemodel <- factor(ifelse(all$YearBuilt == all$YearRemodAdd, 0, 1))
+cat_var <- c(cat_var, "IsRemodel")
+```
+
+
+```{r}
+all$Newhouse <- factor(ifelse(all$YrSold == all$YearBuilt, 1, 0))
+cat_var <- c(cat_var, "Newhouse")
+```
+
+
+## GrLivArea
+
+```{r}
+fit.lm <- lm(SalePrice~GrLivArea, data=all[!is.na(all$SalePrice), ])
+plot(all$SalePrice[!is.na(all$SalePrice)]~all$GrLivArea[!is.na(all$SalePrice)], xlab="GrLivArea", ylab="SalePrice")
+abline(fit.lm, col="red", lwd=2, lty="dotted")
+text(x=all$GrLivArea[!is.na(all$SalePrice)], y=all$SalePrice[!is.na(all$SalePrice)]+50000, labels = ifelse(all$GrLivArea[!is.na(all$SalePrice)] > 4500, rownames(all[!is.na(all$SalePrice),]), ""))
+```
+
++ 524th, 1299th observations are outliers.
+
+```{r}
+all[c(524,1299), c("SalePrice", "GrLivArea", "OverallQual")]
+```
+
+
+## Square feet variables
+
+> TotalBsmtSF: Total square feet of basement area
+
+```{r}
+cor(all$TotalBsmtSF, rowSums(all[c("BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF")]))
+```
+
++ TotalBsmtSF covers "BsmtFinSF1", "BsmtFinSF2", "BsmtUnfSF".
+
+> GrLivArea: Above grade (ground) living area square feet
+
+```{r}
+sf_var <- c(porch_var, "1stFlrSF", "2ndFlrSF", "LowQualFinSF")
+cor(all$GrLivArea, rowSums(all[sf_var]))
+```
+
+```{r}
+all$TotalSF <- all$TotalBsmtSF + all$GrLivArea
+numeric_var <- c(numeric_var, "TotalSF")
+```
+
+
+```{r}
+fit.lm <- lm(all$SalePrice[which(!is.na(all$SalePrice))]~all$TotalSF[which(!is.na(all$SalePrice))])
+summary(fit.lm)
+plot(all$TotalSF[which(!is.na(all$SalePrice))], all$SalePrice[which(!is.na(all$SalePrice))],
+     xlab="TotalSF", ylab="SalePrice")
+abline(fit.lm, col="red", lwd=2)
+text(x=all$TotalSF[!is.na(all$SalePrice)], y=all$SalePrice[!is.na(all$SalePrice)]+50000, labels = ifelse(all$TotalSF[!is.na(all$SalePrice)] > 7500, rownames(all[!is.na(all$SalePrice),]), ""))
+```
+
+
+
+## Bath variables
+
+```{r}
+bath_var
+all$TotalBath <- all$BsmtFullBath + 0.5*all$BsmtHalfBath + all$FullBath + 0.5*all$HalfBath
+numeric_var <- c(numeric_var[-which(numeric_var %in% bath_var)], "TotalBath")
+```
+
+```{r}
+fit.lm <- lm(all$SalePrice[which(!is.na(all$SalePrice))]~all$TotalBath[which(!is.na(all$SalePrice))])
+summary(fit.lm)
+plot(all$TotalBath[which(!is.na(all$SalePrice))], all$SalePrice[which(!is.na(all$SalePrice))],
+     xlab="TotalSF", ylab="SalePrice")
+abline(fit.lm, col="red", lwd=2)
+```
+
+## Porch variables
+
+```{r}
+porch_var
+all$TotalPorchSF <- rowSums(all[porch_var])
+numeric_var <- c(numeric_var, "TotalPorchSF")
+```
+
+```{r}
+fit.lm <- lm(log(all$SalePrice[which(!is.na(all$SalePrice))])~all$TotalPorchSF[which(!is.na(all$SalePrice))])
+summary(fit.lm)
+plot(all$TotalPorchSF[which(!is.na(all$SalePrice))], log(all$SalePrice[which(!is.na(all$SalePrice))]),
+     xlab="TotalPorchSF", ylab="log(SalePrice)")
+abline(fit.lm, col="red", lwd=2)
+```
+
+
+
+```{r}
+all <- all[-c(524, 1299),]
+```
+
+
+
+## Quality and Condition variables
+
+```{r}
+qualcond_df <- all[qualcond_var]
+str(qualcond_df)
+```
+
+ExterQual: Evaluates the quality of the material on the exterior
+
+       10 Ex	Excellent
+       7 Gd	Good
+       5 TA	Average/Typical
+       3 Fa	Fair
+       1 Po	Poor
+
+```{r}
+Qualities <- c('Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+qualcond_df$ExterQual <- as.integer(revalue(qualcond_df$ExterQual, Qualities))
+table(qualcond_df$ExterQual)
+```
+
+ExterCond: Evaluates the present condition of the material on the exterior
+
+       10 Ex	Excellent
+       7 Gd	Good
+       5 TA	Average/Typical
+       3 Fa	Fair
+       1 Po	Poor
+
+```{r}
+Qualities <- c('Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+qualcond_df$ExterCond <- as.integer(revalue(qualcond_df$ExterCond, Qualities))
+table(qualcond_df$ExterCond)
+```
+
+HeatingQC: Heating quality and condition
+
+       10 Ex	Excellent
+       7 Gd	Good
+       5 TA	Average/Typical
+       3 Fa	Fair
+       1 Po	Poor
+       
+```{r}
+Qualities <- c('Po' = 1, 'Fa' = 3, 'TA' = 5, 'Gd' = 7, 'Ex' = 10)
+qualcond_df$HeatingQC <- as.integer(revalue(qualcond_df$HeatingQC, Qualities))
+table(qualcond_df$HeatingQC)
+```      
+
+```{r}
+all$HasPool <- factor(ifelse(all$PoolArea > 0, 1, 0))
+cat_var <- c(cat_var, "HasPool")
+```
+
+```{r}
+boxplot(log(all$SalePrice)~all$HasPool, xlab="HasPool", ylab="log(SalePice)")
+```
+
+```{r}
+t.test(log(all$SalePrice)~all$HasPool)
+```
+
+```{r}
+med_SP_by_NB<- aggregate(SalePrice~Neighborhood, all, FUN=median)
+med_SP_by_NB <- med_SP_by_NB[order(med_SP_by_NB$SalePrice), ]
+barplot(height = med_SP_by_NB$SalePrice, names.arg = med_SP_by_NB$Neighborhood, las=2)
+abline(h= median(all$SalePrice, na.rm=T), col="red", lty="dotted")
+```
+
+```{r}
+quantile(all$SalePrice, na.rm=T)
+```
+
+```{r}
+mean(all$SalePrice, na.rm=T)
+```
+
+```{r, fig.width=5, fig.height=5}
+all$Neighbor_bin <- factor(ifelse(all$Neighborhood %in% as.character(med_SP_by_NB$Neighborhood[1:12]), 1,
+                                  ifelse(all$Neighborhood %in% as.character(med_SP_by_NB$Neighborhood[13:22]), 2, 3)))
+
+table(all$Neighbor_bin)
+boxplot(all$SalePrice~all$Neighbor_bin, xlab="Neighorhood after binning", ylab="SalePrice")
+summary(aov(SalePrice~Neighbor_bin, data=all))
+cat_var <- c(cat_var, "Neighbor_bin")
+```
+
+
+```{r}
+numeric_df <- all[numeric_var]
+```
+
+
+```{r, fig.width=7, fig.height=7}
+par(mfrow=c(3,3))
+for (var in numeric_var[-which(numeric_var=="SalePrice")]){
+  hist(unlist(numeric_df[,var]), main=var, xlab=var)
+}
+```
+
+```{r, fig.width=7, fig.height=7}
+par(mfrow=c(3,3))
+for (var in numeric_var){
+  hist(log(unlist(numeric_df[,var])+1), main=var, xlab=var)
+}
+```
+
+
+## Skewness adjustment and Scaling for continuous variables
+
+```{r}
+for(i in 1:ncol(numeric_df[-which(names(numeric_df)=="SalePrice")])){
+        if (abs(skew(numeric_df[,i]))>0.8){
+                numeric_df[,i] <- log(numeric_df[,i] +1)
+        }
+}
+
+numeric_df[-which(names(numeric_df)=="SalePrice")] <- scale(numeric_df[-which(names(numeric_df)=="SalePrice")])
+
+colSums(is.na(numeric_df))
+```
+
+
+
+## Dummy coding for categorical variables
+
+```{r}
+categ_df <- all[cat_var]
+dummy_mat <- model.matrix(~.-1, categ_df)
+dim(dummy_mat)
+
+# remove variables that almost all values are 1s or 0s
+sum(colSums(dummy_mat)/nrow(all) < 0.01)
+sum(colSums(dummy_mat)/nrow(all) > 0.99)
+idx <- which(colSums(dummy_mat)/nrow(all) >= 0.01 & colSums(dummy_mat)/nrow(all) <= 0.99)
+dummy_df <- as.data.frame(dummy_mat[,idx])
+```
+
+
+## Combine numeric_df, dummy_df and qualcond_df + split to train and test
+
+```{r}
+combined <- cbind(numeric_df, dummy_df, qualcond_df)
+X_train <- combined[!is.na(all$SalePrice), -which(names(combined)=="SalePrice")]
+Y_train <- combined[!is.na(all$SalePrice), which(names(combined)=="SalePrice")]
+X_test <- combined[is.na(all$SalePrice), -which(names(combined)=="SalePrice")]
+```
+
+
+# Variable selection
+
+## Variable importance from Random Forest
+
+```{r, fig.width=10, fig.height=10}
+fit.rf <- randomForest(x=X_train, y=Y_train, importance=T)
+varimp.rf <- importance(fit.rf)
+varImpPlot(fit.rf)
+
+IncMSE <- varimp.rf[,1]
+top30 <- names(IncMSE[order(IncMSE, decreasing = T)][1:30])
+```
+
+
+# Modeling
+
+```{r, eval=F}
+fit.rf <- randomForest(x=X_train, y=Y_train)
+pred.rf <- predict(fit.rf, newdata = X_test)
+head(pred.rf)
+
+submission_rf_log <- read.csv('all/sample_submission.csv')
+submission_rf_log$SalePrice <- exp(pred.rf)
+write.csv(submission_rf_log, file='submission_rf_log.csv', row.names = F)
+```
+
+
+```{r, eval=F}
+fit.rf <- randomForest(x=X_train[,top30], y=Y_train)
+pred.rf <- predict(fit.rf, newdata = X_test)
+head(pred.rf)
+
+submission_rf_log <- read.csv('all/sample_submission.csv')
+submission_rf_log$SalePrice <- exp(pred.rf)
+write.csv(submission_rf_log, file='submission_rf_top30.csv', row.names = F)
+```
+
+```{r, eval=F}
+fit.svm <- svm(x=X_train, y=log(Y_train), kernel = "linear")
+pred.svm <- predict(fit.svm, newdata = X_test)
+head(exp(pred.svm))
+
+submission_svm_log <- read.csv('all/sample_submission.csv')
+submission_svm_log$SalePrice <- exp(pred.svm)
+write.csv(submission_svm_log, file='submission_svm_notr.csv', row.names = F)
+```
+
+
+```{r, eval=F}
+fit.svm <- svm(x=X_train, y=Y_train, kernel = "linear")
+pred.svm <- predict(fit.svm, newdata = X_test)
+head(exp(pred.svm))
+
+submission_svm_log <- read.csv('all/sample_submission.csv')
+submission_svm_log$SalePrice <- exp(pred.svm)
+write.csv(submission_svm_log, file='submission_svm.csv', row.names = F)
+```
+
+
+```{r, eval=F}
+fit.svm <- svm(x=X_train[,top30], y=Y_train, kernel = "linear")
+pred.svm <- predict(fit.svm, newdata = X_test[,top30])
+head(exp(pred.svm))
+
+submission_svm_log <- read.csv('all/sample_submission.csv')
+submission_svm_log$SalePrice <- exp(pred.svm)
+write.csv(submission_svm_log, file='submission_svm_top30.csv', row.names = F)
+```
+
+
+```{r, eval=F}
+fit.xgb <- xgboost(data=as.matrix(X_train), nrounds=700, label=Y_train, objective="reg:linear")
+pred.xgb <- predict(fit.xgb, as.matrix(X_test))
+head(pred.xgb)
+
+submission_xgb_log <- read.csv('all/sample_submission.csv')
+submission_xgb_log$SalePrice <- exp(pred.xgb)
+write.csv(submission_xgb_log, file='submission_xgb_log.csv', row.names = F)
+```
+
+
+
+```{r, eval=F}
+names(X_train) <- paste0("X", 1:length(names(X_train)))
+train <- cbind(X_train, Y_train)
+fit.nn <- neuralnet(as.formula(paste("Y_train ~", paste(names(X_train), collapse="+"))), data=train, hidden=c(10), rep=1, linear.output=T)
+pred.nn <- compute(fit.nn, X_test)$net.result
+head(exp(pred.nn))
+
+submission_nn <- read.csv('all/sample_submission.csv')
+submission_nn$SalePrice <- exp(pred.nn)
+write.csv(submission_nn, file='submission_nn.csv', row.names = F)
+```
+

@@ -313,6 +313,10 @@ My conclusion is that the values do not seem ordinal (no fence is best). Therefo
 all$Fence <- as.factor(all$Fence)
 ```
 
+```{r}
+#내 생각
+cor(all$Fence, all$SalePrice, use='complete.obs')
+```
 **Please return to the 5.2 Tabs menu to select other (groups of) variables**
 
 ###Fireplace variables
@@ -352,8 +356,11 @@ sum(table(all$Fireplaces))
 
 3 variables. One with 1 NA, and 2 complete variables.
 ```{r}
+#내분석
 all[,c("LotFrontage","LotArea","LotShape","Neighborhood")] %>% filter(is.na(all$LotFrontage))  
+#summarise(group_by(all[!is.na(all$LotFrontage),], all[!is.na(all$LotFrontage),all$Neighborhood]), mean=mean(all))
 
+table(all$LotFrontage)
 ```
 
 **LotFrontage: Linear feet of street connected to property**
@@ -363,9 +370,18 @@ all[,c("LotFrontage","LotArea","LotShape","Neighborhood")] %>% filter(is.na(all$
 
 ```{r}
 ggplot(all[!is.na(all$LotFrontage),], aes(x=as.factor(Neighborhood), y=LotFrontage)) +
+        geom_bar(stat='summary', fun.y = "mean", fill='blue') +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+ggplot(all[!is.na(all$LotFrontage),], aes(x=as.factor(Neighborhood), y=LotFrontage)) +
         geom_bar(stat='summary', fun.y = "median", fill='blue') +
         theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
+```{r}
+boxplot(all$LotFrontage, all$Neighborhood)
+```
+
 
 ```{r}
 for (i in 1:nrow(all)){
@@ -383,6 +399,19 @@ No NAs. Values seem ordinal (Regular=best)
        IR1	Slightly irregular
        IR2	Moderately Irregular
        IR3	Irregular
+```{r}
+#내 생각
+ggplot(all[!is.na(all$SalePrice),], aes(x=as.factor(LotShape), y=SalePrice)) +
+        geom_bar(stat='summary', fun.y = "median", fill='blue')+
+        scale_y_continuous(breaks= seq(0, 800000, by=100000), labels = comma) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..))
+
+```
+```{r}
+#내 생각
+cor(all$SalePrice, all$LotShape, use='complete.obs')
+```
+
 
 ```{r}
 all$LotShape<-as.integer(revalue(all$LotShape, c('IR3'=0, 'IR2'=1, 'IR1'=2, 'Reg'=3)))
@@ -441,6 +470,7 @@ The 157 NAs within GarageType all turn out to be NA in GarageCondition, GarageQu
 
 ```{r}
 #Imputing modes.
+table(all$GarageQual)
 all$GarageCond[2127] <- names(sort(-table(all$GarageCond)))[1]
 all$GarageQual[2127] <- names(sort(-table(all$GarageQual)))[1]
 all$GarageFinish[2127] <- names(sort(-table(all$GarageFinish)))[1]
